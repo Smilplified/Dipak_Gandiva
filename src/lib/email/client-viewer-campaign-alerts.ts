@@ -1,5 +1,3 @@
-const RESEND = process.env.RESEND_API_URL
-
 
 const CLIENT_VIEWER_CAMPAIGN_ALERT_TO = [
   "developer@b2bindemand.com",
@@ -8,6 +6,7 @@ const CLIENT_VIEWER_CAMPAIGN_ALERT_TO = [
   "sanket@b2bindemand.com",
 ] as const;
 
+const RESEND_API_URL = "https://api.resend.com/emails";
 
 function escapeHtml(value: string): string {
   return value
@@ -62,7 +61,7 @@ async function sendResendAlertEmail(args: {
     return;
   }
 
-  const res = await fetch(RESEND, {
+  const res = await fetch(RESEND_API_URL, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,

@@ -548,23 +548,39 @@ export async function loadQatlCampaignsForDateRange(
     });
   }
 
-  // Latest-launched campaigns first
-  // (start_date), then newest created.
+  // Latest lead activity first.
+  //
+  // If a new lead is added to a campaign, its created_at
+  // becomes the campaign's last_lead_activity_at.
+  // Therefore that campaign moves to the top of the table.
+  //
+  // Fallback order:
+  // 1. Latest lead added
+  // 2. Campaign start date
+  // 3. Campaign created date
   visible.sort((a, b) => {
+    const aActivity = a.last_lead_activity_at
+      ? new Date(a.last_lead_activity_at).getTime()
+      : 0;
+
+    const bActivity = b.last_lead_activity_at
+      ? new Date(b.last_lead_activity_at).getTime()
+      : 0;
+
+    if (bActivity !== aActivity) {
+      return bActivity - aActivity;
+    }
+
     const aLaunch = a.start_date
       ? new Date(a.start_date).getTime()
       : a.created_at
-        ? new Date(
-            a.created_at
-          ).getTime()
+        ? new Date(a.created_at).getTime()
         : 0;
 
     const bLaunch = b.start_date
       ? new Date(b.start_date).getTime()
       : b.created_at
-        ? new Date(
-            b.created_at
-          ).getTime()
+        ? new Date(b.created_at).getTime()
         : 0;
 
     if (bLaunch !== aLaunch) {
@@ -631,4 +647,4 @@ export async function loadQatlCampaignsForDateRange(
       visible.length
     ),
   };
-} 
+}

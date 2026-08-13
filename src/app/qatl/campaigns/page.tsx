@@ -39,6 +39,7 @@ type Campaign = {
   campaign_id?: string | null;
   campaign_code?: string | null;
   name: string;
+  total_allocation?: number | null;
   client_name?: string | null;
   description: string | null;
   industry: string | null;
@@ -51,6 +52,8 @@ type Campaign = {
   created_at?: string;
   assigned_team_leader_name?: string | null;
   scored_leads_count?: number;
+  qualified_leads_count?: number;
+  disqualified_leads_count?: number;
   qa_pending_leads_count?: number;
   delivered_leads_count?: number;
   leads?: Lead[];
@@ -111,6 +114,8 @@ export default function QATLCampaignsPage() {
   const { status } = useRoleGuard(["qa_tl", "admin"]);
   const [exporting, setExporting] = useState(false);
   const [selectedRowKeys, setSelectedRowKeys] = useState<React.Key[]>([]);
+  const [selectAll, setSelectAll] = useState(false); // Track if "select all" is active
+  const [allCampaignIds, setAllCampaignIds] = useState<string[]>([]); // Store all campaign IDs
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
@@ -127,6 +132,8 @@ export default function QATLCampaignsPage() {
   useEffect(() => {
     resetPage();
     setSelectedRowKeys([]);
+    setSelectAll(false);
+    setAllCampaignIds([]);
   }, [dateRange, leadTypeFilter, resetPage]);
 
   useEffect(() => {
@@ -136,6 +143,9 @@ export default function QATLCampaignsPage() {
 
   useEffect(() => {
     resetPage();
+    setSelectedRowKeys([]);
+    setSelectAll(false);
+    setAllCampaignIds([]);
   }, [debouncedSearch, statusFilter, resetPage]);
 
   const clientTimeZone = useMemo(() => {
@@ -144,22 +154,48 @@ export default function QATLCampaignsPage() {
   }, []);
 
   const buildUrl = useCallback(
-    (opts?: { includeLeads?: boolean; campaignIds?: string[] }) => {
+    (opts?: {
+      includeLeads?: boolean;
+      campaignIds?: string[];
+      customPage?: number;
+      customLimit?: number;
+    }) => {
       const exportIds = opts?.campaignIds ?? [];
+
       return buildListApiUrl("/api/qatl/campaigns", {
         start_date: dateRange[0].format("YYYY-MM-DD"),
         end_date: dateRange[1].format("YYYY-MM-DD"),
         tz: clientTimeZone,
-        page: exportIds.length > 0 ? 1 : page,
-        limit: exportIds.length > 0 ? exportIds.length : pageSize,
+
+        page:
+          opts?.customPage ??
+          (exportIds.length > 0 ? 1 : page),
+
+        limit:
+          opts?.customLimit ??
+          (exportIds.length > 0 ? exportIds.length : pageSize),
+
         q: debouncedSearch || undefined,
         status: statusFilter || undefined,
         lead_type: leadTypeFilter || undefined,
+
         include_leads: opts?.includeLeads ? 1 : undefined,
-        campaign_ids: exportIds.length > 0 ? exportIds.join(",") : undefined,
+
+        campaign_ids:
+          exportIds.length > 0
+            ? exportIds.join(",")
+            : undefined,
       });
     },
-    [dateRange, clientTimeZone, page, pageSize, debouncedSearch, statusFilter, leadTypeFilter]
+    [
+      dateRange,
+      clientTimeZone,
+      page,
+      pageSize,
+      debouncedSearch,
+      statusFilter,
+      leadTypeFilter,
+    ]
   );
 
   const listUrl = buildUrl();
@@ -190,6 +226,32 @@ export default function QATLCampaignsPage() {
     enabled: listEnabled,
     placeholderData: (previous) => previous,
   });
+
+  // ✅ NEW: Query to fetch ALL campaigns for selection
+  const allCampaignsQuery = useQuery({
+    queryKey: ["qatl", "campaigns", "all", listUrl.split("&page=")[0] + "&limit=10000"], // Remove pagination, get all
+    queryFn: async () => {
+      const baseUrl = listUrl.split("&page=")[0]; // Remove page parameter
+      const allUrl = baseUrl.includes("limit=")
+        ? baseUrl.replace(/limit=\d+/, "limit=10000")
+        : baseUrl + "&limit=10000";
+
+      const res = await fetch(allUrl, { credentials: "include" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to load");
+      return data as { campaigns?: Campaign[] };
+    },
+    enabled: listEnabled && selectAll, // Only fetch when "select all" is active
+  });
+
+  // ✅ Update selectedRowKeys when allCampaigns loads
+  useEffect(() => {
+    if (selectAll && allCampaignsQuery.data?.campaigns) {
+      const ids = allCampaignsQuery.data.campaigns.map((c) => c.id);
+      setAllCampaignIds(ids);
+      setSelectedRowKeys(ids);
+    }
+  }, [selectAll, allCampaignsQuery.data?.campaigns]);
 
   const campaigns = useMemo(
     () => campaignsQuery.data?.campaigns ?? [],
@@ -237,6 +299,7 @@ export default function QATLCampaignsPage() {
   const rangeLabel = `${dateRange[0].format("DD MMM YYYY")} – ${dateRange[1].format("DD MMM YYYY")}`;
 
   const handleExport = async () => {
+    // ✅ Use selectedRowKeys (which now includes all selected across pages)
     const selectedIds = selectedRowKeys.map(String);
     if (selectedIds.length === 0) {
       message.warning("Select one or more campaigns to export");
@@ -285,9 +348,30 @@ export default function QATLCampaignsPage() {
     }
   };
 
+  // ✅ UPDATED: Handle row selection with "select all" detection
   const rowSelection = {
-    selectedRowKeys,
-    onChange: (keys: React.Key[]) => setSelectedRowKeys(keys),
+    selectedRowKeys: selectAll ? allCampaignIds : selectedRowKeys,
+    onChange: (keys: React.Key[], selectedRows: Campaign[]) => {
+      // If user selected all rows on current page and there are more pages
+      const totalCampaigns = campaignsQuery.data?.pagination?.total ?? 0;
+      const isSelectingAll = keys.length === campaigns.length && campaigns.length > 0 && totalCampaigns > campaigns.length;
+
+      if (isSelectingAll) {
+        // User clicked "select all" - fetch and select all campaigns
+        setSelectAll(true);
+        message.loading("Selecting all campaigns...");
+      } else if (keys.length === 0) {
+        // User deselected all
+        setSelectAll(false);
+        setSelectedRowKeys([]);
+        setAllCampaignIds([]);
+      } else {
+        // User manually selected specific rows
+        setSelectAll(false);
+        setSelectedRowKeys(keys);
+        setAllCampaignIds([]);
+      }
+    },
     preserveSelectedRowKeys: true,
     columnWidth: 48,
   };
@@ -329,6 +413,21 @@ export default function QATLCampaignsPage() {
         render: (v: string | null) => tableEllipsisCell(v),
       },
       {
+        title: "Total Allocation",
+        dataIndex: "total_allocation",
+        key: "total_allocation",
+        width: 130,
+        align: "center",
+        sorter: (a, b) =>
+          (a.total_allocation ?? 0) - (b.total_allocation ?? 0),
+        sortDirections: ["descend", "ascend"] as const,
+        render: (v: number | null | undefined) => (
+          <Tag color="geekblue" style={{ margin: 0 }}>
+            {v ?? "—"}
+          </Tag>
+        ),
+      },
+      {
         title: "Lead Type",
         dataIndex: "lead_type",
         key: "lead_type",
@@ -337,22 +436,39 @@ export default function QATLCampaignsPage() {
         render: (v: string | null) => tableEllipsisCell(v),
       },
       {
-        title: "Industry",
-        dataIndex: "industry",
-        key: "industry",
-        width: 160,
-        ellipsis: { showTitle: false },
-        className: "table-col-campaign-name",
-        render: (v: string | null) => tableEllipsisCell(v),
+        title: "Qualified",
+        dataIndex: "qualified_leads_count",
+        key: "qualified_leads_count",
+        width: 105,
+        align: "center",
+        sorter: (a, b) =>
+          (a.qualified_leads_count ?? 0) -
+          (b.qualified_leads_count ?? 0),
+        sortDirections: ["descend", "ascend"] as const,
+        render: (v: number | undefined) => (
+          <Tag color="green" style={{ margin: 0 }}>
+            {v ?? 0}
+          </Tag>
+        ),
       },
       {
-        title: "Geography",
-        dataIndex: "geography",
-        key: "geography",
-        width: 110,
-        ellipsis: true,
-        render: (v: string | null) => tableEllipsisCell(v),
+        title: "Disqualified",
+        dataIndex: "disqualified_leads_count",
+        key: "disqualified_leads_count",
+        width: 120,
+        align: "center",
+        sorter: (a, b) =>
+          (a.disqualified_leads_count ?? 0) -
+          (b.disqualified_leads_count ?? 0),
+        sortDirections: ["descend", "ascend"] as const,
+        render: (v: number | undefined) => (
+          <Tag color="volcano" style={{ margin: 0 }}>
+            {v ?? 0}
+          </Tag>
+        ),
       },
+
+
       {
         title: "Start Date",
         dataIndex: "start_date",
@@ -593,8 +709,8 @@ export default function QATLCampaignsPage() {
           Leads, QA Pending &amp; Delivered columns count scored leads uploaded between {rangeLabel} (your local
           timezone). QA Pending = leads not yet QA-reviewed.
           {selectedRowKeys.length > 0
-            ? ` · ${selectedRowKeys.length} campaign${selectedRowKeys.length !== 1 ? "s" : ""} selected for export.`
-            : " · Select campaigns using the checkboxes, then export with leads."}
+            ? ` · ${selectedRowKeys.length} campaign${selectedRowKeys.length !== 1 ? "s" : ""} selected for export${selectAll ? " (all across all pages)" : ""}.`
+            : " · Select campaigns using the checkboxes (including Select All), then export with leads."}
         </Typography.Text>
       </Card>
 
